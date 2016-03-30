@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008-2012 TrinityCore <http://www.trinitycore.org/>
+ * Copyright (C) 2013-2015 DeathCore <http://www.noffearrdeathproject.net/>
  * Copyright (C) 2005-2009 MaNGOS <http://getmangos.com/>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -52,16 +52,6 @@ Channel::Channel(const std::string& name, uint32 channel_id, uint32 Team)
             m_flags |= CHANNEL_FLAG_NOT_LFG;
     }
     else if (!stricmp(m_name.c_str(), "world"))
-    {
-        m_announce = false;
-        _special = true;
-    }
-    else if (!stricmp(m_name.c_str(), "english"))
-    {
-        m_announce = false;
-        _special = true;
-    }
-    else if (!stricmp(m_name.c_str(), "all"))
     {
         m_announce = false;
         _special = true;
@@ -122,7 +112,7 @@ bool Channel::IsWorld() const
     for (uint32 i = 0; i < nameLength; ++i)
         lowername.push_back(std::towlower(m_name[i]));
 
-    if (lowername == "world" || lowername == "english" || lowername == "all")
+    if (lowername == "world")
         return true;
 
     return false;
@@ -231,6 +221,8 @@ void Channel::Join(uint64 p, const char *pass)
     MakeYouJoined(&data);
     SendToOne(&data, p);
 
+    JoinNotify(p);
+
     // Custom channel handling
     if (!IsConstant())
     {
@@ -281,6 +273,8 @@ void Channel::Leave(uint64 p, bool send)
             MakeLeft(&data, p);
             SendToAll(&data);
         }
+
+        LeaveNotify(p);
 
         if (!IsConstant())
         {
@@ -661,8 +655,6 @@ void Channel::Say(uint64 p, const char *what, uint32 lang)
         lang = LANG_UNIVERSAL;
 
     Player* player = ObjectAccessor::FindPlayer(p);
-    if (!player)
-        return;
 
     if (!IsOn(p))
     {
@@ -680,8 +672,31 @@ void Channel::Say(uint64 p, const char *what, uint32 lang)
     {
         uint32 messageLength = strlen(what) + 1;
 
-        WorldPacket data;
-        player->BuildPlayerChat(&data, CHAT_MSG_CHANNEL, what, lang, NULL, m_name);
+        WorldPacket data(SMSG_MESSAGE_CHAT, 1 + 4 + 8 + 4 + m_name.size() + 1 + 8 + 4 + messageLength + 1);
+		//5.4.8
+        data << (uint8)CHAT_MSG_CHANNEL;
+        data << (uint32)lang;
+        data << p;
+        data << p;
+		data << what;
+		data << uint16(player ? player->GetChatTag() : 0);
+		data << uint32(0);                                  // 2.1.0
+		data << uint32(0);                                  // 2.1.0
+		data << messageLength;
+		data << m_name;
+		
+		//////////////////////////////////////
+		/*
+        data << (uint8)CHAT_MSG_CHANNEL;
+        data << (uint32)lang;
+        data << p;                                          // 2.1.0
+        data << uint32(0);                                  // 2.1.0
+        data << m_name;
+        data << p;
+        data << messageLength;
+        data << what;
+        data << uint16(player ? player->GetChatTag() : 0);
+		*/
         SendToAll(&data, !players[p].IsModerator() ? p : false);
     }
 }
@@ -697,7 +712,7 @@ void Channel::Invite(uint64 p, const char *newname)
     }
 
     Player* newp = sObjectAccessor->FindPlayerByName(newname);
-    if (!newp || !newp->isGMVisible() || newp->InArena())
+    if (!newp || !newp->isGMVisible())
     {
         WorldPacket data;
         MakePlayerNotFound(&data, newname);
@@ -790,6 +805,15 @@ void Channel::SendToAll(WorldPacket* data, uint64 p)
 
 void Channel::SendToAllButOne(WorldPacket* data, uint64 who)
 {
+    for (PlayerList::const_iterator i = players.begin(); i != players.end(); ++i)
+    {
+        if (i->first != who)
+        {
+            Player* player = ObjectAccessor::FindPlayer(i->first);
+            if (player)
+                player->GetSession()->SendPacket(data);
+        }
+    }
 }
 
 void Channel::SendToOne(WorldPacket* data, uint64 who)
@@ -1057,8 +1081,35 @@ void Channel::MakeVoiceOff(WorldPacket* data, uint64 guid)
 
 void Channel::JoinNotify(uint64 guid)
 {
+    WorldPacket data;
+
+    if (IsConstant())
+        data.Initialize(SMSG_USERLIST_ADD, 8+1+1+4+GetName().size()+1);
+    else
+        data.Initialize(SMSG_USERLIST_UPDATE, 8+1+1+4+GetName().size()+1);
+
+    data << uint64(guid);
+    data << uint8(GetPlayerFlags(guid));
+    data << uint8(GetFlags());
+    data << uint32(GetNumPlayers());
+    data << GetName();
+
+    if (IsConstant())
+        SendToAllButOne(&data, guid);
+    else
+        SendToAll(&data);
 }
 
 void Channel::LeaveNotify(uint64 guid)
 {
+    WorldPacket data(SMSG_USERLIST_REMOVE, 8+1+4+GetName().size()+1);
+    data << uint64(guid);
+    data << uint8(GetFlags());
+    data << uint32(GetNumPlayers());
+    data << GetName();
+
+    if (IsConstant())
+        SendToAllButOne(&data, guid);
+    else
+        SendToAll(&data);
 }
